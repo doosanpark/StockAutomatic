@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'css/style.css' %}?v=2.3">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <div class="dashboard-container">
+        <header>
+            <h1>Stock Market Dashboard</h1>
+            <p style="color: grey; margin-top: 0.5rem;">Click a bar to view sector details.</p>
+        </header>
+
+        <!-- Top Section: Overview Bar Chart -->
+        <div class="grid">
+            <div class="card full-width">
+                <h2>GICS Sector Performance (Real-time)</h2>
+                <div style="height: 300px;">
+                    <canvas id="sectorChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Detail Section: Trend Line Chart & News -->
+        <div id="detail-section">
+            <div class="grid">
+                <!-- Trend Chart -->
+                <div class="card">
+                    <h2 id="detail-title">Sector Trend (30 Days)</h2>
+                    <div style="height: 300px; position: relative;">
+                        <div id="chart-loader" class="loading-overlay" style="display: none;">Loading...</div>
+                        <canvas id="trendChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Related News -->
+                <div class="card">
+                    <h2>Recent News</h2>
+                    <div id="news-loader" style="text-align: center; color: gray; display: none;">Loading news...</div>
+                    <div id="news-list" class="news-list">
+                        <!-- News items will be populated here -->
+                        <p style="text-align: center; color: gray; padding: 2rem;">Select a sector to view news.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {{ sector_data|json_script:"sector-data" }}
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const rawData = JSON.parse(document.getElementById('sector-data').textContent);
+            const ctx = document.getElementById('sectorChart').getContext('2d');
+            let trendChart = null;
+
+            // --- 1. Main Bar Chart ---
+            const labels = rawData.map(item => item.name);
+            const tickers = rawData.map(item => item.ticker);
+            const data = rawData.map(item => item.value);
+            const backgroundColors = data.map(val => val >= 0 ? 'rgba(0, 255, 136, 0.6)' : 'rgba(255, 77, 77, 0.6)');
+            const borderColors = data.map(val => val >= 0 ? '#00ff88' : '#ff4d4d');
+
+            const mainChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Change (%)',
+                        data: data,
+                        backgroundColor: backgroundColors,
+                        borderColor: borderColors,
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) {
+                            const index = elements[0].index;
+                            const ticker = tickers[index];
+                            const sectorName = labels[index];
+                            loadSectorDetail(ticker, sectorName);
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: { color: '#333' },
+                            ticks: { color: '#a0a0a0' }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#a0a0a0' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (context) => ` ${context.raw}%`
+                            }
+                        }
+                    }
+                }
+            });
+
+            // --- 2. AJAX & Detail View Logic ---
+            async function loadSectorDetail(ticker, sectorName) {
+                const detailSection = document.getElementById('detail-section');
+                const detailTitle = document.getElementById('detail-title');
+                const newsList = document.getElementById('news-list');
+                const chartLoader = document.getElementById('chart-loader');
+                const newsLoader = document.getElementById('news-loader');
+
+                // Show Section
+                detailSection.classList.add('visible');
+                detailTitle.textContent = `${sectorName} (${ticker}) - 30 Day Trend`;
+
+                // Show Loaders & Clear Old Data
+                chartLoader.style.display = 'flex';
+                newsLoader.style.display = 'block';
+                newsList.innerHTML = '';
+
+                try {
+                    const response = await fetch(`/api/sector/${ticker}/`);
+                    const data = await response.json();
+
+                    // Update Line Chart
+                    updateTrendChart(data.dates, data.prices, sectorName);
+
+                    // Update News
+                    updateNewsList(data.news);
+
+                } catch (error) {
+                    console.error('Error loading detail:', error);
+                    newsList.innerHTML = '<p style="color: red; text-align: center;">Failed to load data.</p>';
+                } finally {
+                    chartLoader.style.display = 'none';
+                    newsLoader.style.display = 'none';
+                    // Scroll to detail section smoothly
+                    detailSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }
+
+            function updateTrendChart(dates, prices, label) {
+                const ctxTrend = document.getElementById('trendChart').getContext('2d');
+
+                // Determine color based on trend (start vs end)
+                const isPositive = prices[prices.length - 1] >= prices[0];
+                const color = isPositive ? '#00ff88' : '#ff4d4d';
+                const bgColor = isPositive ? 'rgba(0, 255, 136, 0.1)' : 'rgba(255, 77, 77, 0.1)';
+
+                if (trendChart) {
+                    trendChart.destroy();
+                }
+
+                trendChart = new Chart(ctxTrend, {
+                    type: 'line',
+                    data: {
+                        labels: dates,
+                        datasets: [{
+                            label: 'Price',
+                            data: prices,
+                            borderColor: color,
+                            backgroundColor: bgColor,
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4,
+                            pointRadius: 0,
+                            pointHoverRadius: 6
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            intersect: false,
+                            mode: 'index',
+                        },
+                        scales: {
+                            y: {
+                                grid: { color: '#333' },
+                                ticks: { color: '#a0a0a0' }
+                            },
+                            x: {
+                                display: true,
+                                grid: { display: false },
+                                ticks: {
+                                    color: '#a0a0a0',
+                                    maxTicksLimit: 6, // Limit labels to avoid clutter
+                                    maxRotation: 0
+                                }
+                            }
+                        },
+                        plugins: {
+                            legend: { display: false }
+                        }
+                    }
+                });
+            }
+
+            function updateNewsList(newsItems) {
+                const container = document.getElementById('news-list');
+
+                if (newsItems.length === 0) {
+                    container.innerHTML = '<p style="text-align: center; color: gray;">No recent news found.</p>';
+                    return;
+                }
+
+                newsItems.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'news-item';
+                    div.innerHTML = `
+                        <a href="${item.link}" target="_blank" class="news-link">
+                            <span class="news-title">${item.title}</span>
+                            <div class="news-meta">
+                                <span>${item.publisher}</span> • <span>${item.date}</span>
+                            </div>
+                        </a>
+                    `;
+                    container.appendChild(div);
+                });
+            }
+        });
+    </script>
+</body>
+
+</html>
